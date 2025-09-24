@@ -1,95 +1,186 @@
 import streamlit as st
 import pandas as pd
-from io import BytesIO
 import matplotlib.pyplot as plt
+import io
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
 
 st.set_page_config(page_title="Bank Statement Analyzer", layout="wide")
 
-st.title("🏦 Bank Statement Analyzer")
+st.title("📊 Bank Statement Analyzer")
 
-uploaded_file = st.file_uploader("📂 Upload your bank statement (CSV or Excel)", type=["csv", "xlsx"])
+uploaded_file = st.file_uploader("Upload your Bank Statement (.xls, .xlsx, .csv)", type=["xls", "xlsx", "csv"])
 
 if uploaded_file:
     # Read file
-    try:
-        if uploaded_file.name.endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_excel(uploaded_file)
-    except Exception as e:
-        st.error(f"❌ Error reading file: {e}")
-        st.stop()
+    if uploaded_file.name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+    else:
+        df = pd.read_excel(uploaded_file)
 
-    # 🔹 Clean column names
-    df.columns = df.columns.str.strip().str.lower()
+    # Show raw data
+    st.subheader("📑 Raw Data Preview")
+    st.dataframe(df.head(20))
 
-    st.subheader("📋 Raw Data Preview")
-    st.dataframe(df.head(50))  # Show more rows
+    # 🔹 Auto-detect columns
+    col_map = {}
+    for col in df.columns:
+        c = col.strip().lower()
 
-    # 🔹 Debit & Credit
-    if "debit" in df.columns and "credit" in df.columns:
-        df["debit"] = pd.to_numeric(df["debit"], errors="coerce").fillna(0)
-        df["credit"] = pd.to_numeric(df["credit"], errors="coerce").fillna(0)
+        if "date" in c:
+            col_map[col] = "Date"
+        elif any(x in c for x in ["withdrawal", "debit", "outflow", "spent", "paid"]):
+            col_map[col] = "Debit"
+        elif any(x in c for x in ["deposit", "credit", "inflow", "received", "income"]):
+            col_map[col] = "Credit"
+        elif "desc" in c or "narration" in c or "remarks" in c:
+            col_map[col] = "Description"
+        elif "balance" in c:
+            col_map[col] = "Balance"
+        elif "ref" in c or "cheque" in c:
+            col_map[col] = "Ref_No"
 
-        total_credit = df["credit"].sum()
-        total_debit = df["debit"].sum()
+    df.rename(columns=col_map, inplace=True)
+
+    # Ensure required columns
+    if 'Date' not in df.columns:
+        st.error("❌ No 'Date' column found. Please check your file.")
+    else:
+        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+
+        if 'Debit' not in df.columns:
+            df['Debit'] = 0
+        if 'Credit' not in df.columns:
+            df['Credit'] = 0
+
+        df['Debit'] = pd.to_numeric(df['Debit'], errors='coerce').fillna(0)
+        df['Credit'] = pd.to_numeric(df['Credit'], errors='coerce').fillna(0)
+
+        # 🔹 Analysis
+        st.subheader("📊 Analysis")
+        st.write("✅ Total Rows:", len(df))
+
+        date_min, date_max = df['Date'].min(), df['Date'].max()
+        st.write("📅 Date Range:", date_min, "→", date_max)
+
+        total_credit = df['Credit'].sum()
+        total_debit = df['Debit'].sum()
         net_balance = total_credit - total_debit
-    else:
-        st.warning("⚠️ No 'Debit' and 'Credit' columns found. Check your file.")
-        total_credit, total_debit, net_balance = 0, 0, 0
 
-    # 🔹 Dates
-    if "value date" in df.columns:
-        df["value date"] = pd.to_datetime(df["value date"], errors="coerce")
-        date_range = f"{df['value date'].min().date()} → {df['value date'].max().date()}"
-    else:
-        date_range = "No 'Value Date' column found"
+        st.write("💰 Total Credit:", f"{total_credit:,.2f}")
+        st.write("💸 Total Debit:", f"{total_debit:,.2f}")
+        st.write("📌 Net Balance (Credit - Debit):", f"{net_balance:,.2f}")
 
-    # 🔹 Analysis Section
-    st.subheader("📊 Analysis")
-    st.write("✅ **Total Rows:**", len(df))
-    st.write("📅 **Date Range:**", date_range)
-    st.write("💰 **Total Credit:**", total_credit)
-    st.write("💸 **Total Debit:**", total_debit)
-    st.write("📌 **Net Balance (Credit - Debit):**", net_balance)
+        # 🔹 Monthly Summary
+        df['Month'] = df['Date'].dt.to_period('M')
+        monthly_summary = df.groupby('Month')[['Debit', 'Credit']].sum().reset_index()
+        monthly_summary['Month'] = monthly_summary['Month'].astype(str)
 
-    # 🔹 Charts
-    if "value date" in df.columns and "debit" in df.columns and "credit" in df.columns:
+        st.subheader("📅 Monthly Summary")
+        st.dataframe(monthly_summary)
+
+        # 🔹 Graphs
         st.subheader("📈 Visual Insights")
 
-        # Group by Date
-        daily_summary = df.groupby("value date")[["debit", "credit"]].sum()
-
-        # Bar chart
-        st.write("**Daily Debit vs Credit**")
-        fig, ax = plt.subplots(figsize=(10, 4))
-        daily_summary.plot(kind="bar", ax=ax)
-        ax.set_ylabel("Amount")
-        ax.set_xlabel("Date")
-        ax.set_title("Daily Debit vs Credit")
+        # Daily trend chart
+        fig, ax = plt.subplots(figsize=(8, 4))
+        df.groupby('Date')[['Debit', 'Credit']].sum().plot(ax=ax)
+        plt.title("Daily Debit & Credit Trend")
+        plt.ylabel("Amount")
         st.pyplot(fig)
 
-        # Monthly trend
-        st.write("**Monthly Credit vs Debit Trend**")
-        monthly_summary = df.groupby(df["value date"].dt.to_period("M"))[["debit", "credit"]].sum()
-        fig2, ax2 = plt.subplots(figsize=(10, 4))
-        monthly_summary.plot(kind="line", marker="o", ax=ax2)
-        ax2.set_ylabel("Amount")
-        ax2.set_xlabel("Month")
-        ax2.set_title("Monthly Trend")
+        # Save daily trend for PDF
+        img_buffer1 = io.BytesIO()
+        fig.savefig(img_buffer1, format='png')
+        img_buffer1.seek(0)
+
+        # Monthly bar chart
+        fig3, ax3 = plt.subplots(figsize=(8, 4))
+        monthly_summary.plot(x='Month', y=['Debit', 'Credit'], kind='bar', ax=ax3)
+        plt.title("Monthly Debit & Credit Summary")
+        plt.ylabel("Amount")
+        st.pyplot(fig3)
+
+        img_buffer2 = io.BytesIO()
+        fig3.savefig(img_buffer2, format='png')
+        img_buffer2.seek(0)
+
+        # Pie chart
+        fig2, ax2 = plt.subplots()
+        debit_by_desc = df.groupby('Description')['Debit'].sum().sort_values(ascending=False).head(5)
+        debit_by_desc.plot.pie(ax=ax2, autopct='%1.1f%%', startangle=90)
+        plt.title("Top 5 Spending Categories")
         st.pyplot(fig2)
 
-    # 🔹 Download Report
-    st.subheader("📥 Download Report")
-    try:
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-            df.to_excel(writer, index=False, sheet_name="BankStatement")
+        img_buffer3 = io.BytesIO()
+        fig2.savefig(img_buffer3, format='png')
+        img_buffer3.seek(0)
+
+        # 🔹 Download Excel Report
+        st.subheader("📥 Download Reports")
+
+        output_excel = io.BytesIO()
+        with pd.ExcelWriter(output_excel, engine="xlsxwriter") as writer:
+            df.to_excel(writer, sheet_name="Raw Data", index=False)
+
+            summary = pd.DataFrame({
+                "Metric": ["Total Credit", "Total Debit", "Net Balance"],
+                "Value": [total_credit, total_debit, net_balance]
+            })
+            summary.to_excel(writer, sheet_name="Summary", index=False)
+
+            monthly_summary.to_excel(writer, sheet_name="Monthly Summary", index=False)
+
         st.download_button(
-            label="⬇️ Download Excel Report",
-            data=output.getvalue(),
-            file_name="BankStatementReport.xlsx",
+            "⬇ Download Excel Report",
+            data=output_excel.getvalue(),
+            file_name="Bank_Report.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-    except Exception as e:
-        st.error(f"⚠️ Error creating report: {e}")
+
+        # 🔹 Download PDF Report
+        output_pdf = io.BytesIO()
+        doc = SimpleDocTemplate(output_pdf, pagesize=A4)
+        styles = getSampleStyleSheet()
+        elements = []
+
+        elements.append(Paragraph("📊 Bank Statement Analysis Report", styles["Title"]))
+        elements.append(Spacer(1, 12))
+
+        # Summary table
+        data = [["Metric", "Value"],
+                ["Total Credit", f"{total_credit:,.2f}"],
+                ["Total Debit", f"{total_debit:,.2f}"],
+                ["Net Balance", f"{net_balance:,.2f}"]]
+
+        table = Table(data, colWidths=[150, 150])
+        table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.grey),
+                                   ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                                   ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                                   ("GRID", (0, 0), (-1, -1), 1, colors.black)]))
+        elements.append(table)
+        elements.append(Spacer(1, 12))
+
+        # Insert charts into PDF
+        elements.append(Paragraph("Daily Debit & Credit Trend", styles["Heading2"]))
+        elements.append(Image(img_buffer1, width=400, height=200))
+        elements.append(Spacer(1, 12))
+
+        elements.append(Paragraph("Monthly Debit & Credit Summary", styles["Heading2"]))
+        elements.append(Image(img_buffer2, width=400, height=200))
+        elements.append(Spacer(1, 12))
+
+        elements.append(Paragraph("Top 5 Spending Categories", styles["Heading2"]))
+        elements.append(Image(img_buffer3, width=300, height=200))
+        elements.append(Spacer(1, 12))
+
+        doc.build(elements)
+
+        st.download_button(
+            "⬇ Download PDF Report",
+            data=output_pdf.getvalue(),
+            file_name="Bank_Report.pdf",
+            mime="application/pdf"
+        )
